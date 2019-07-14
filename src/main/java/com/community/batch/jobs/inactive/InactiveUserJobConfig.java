@@ -2,6 +2,7 @@ package com.community.batch.jobs.inactive;
 
 import com.community.batch.domain.User;
 import com.community.batch.domain.enums.UserStatus;
+import com.community.batch.jobs.inactive.listener.InactiveIJobListener;
 import com.community.batch.repository.UserRepository;
 import lombok.AllArgsConstructor;
 import org.springframework.batch.core.Job;
@@ -33,10 +34,12 @@ public class InactiveUserJobConfig {
     private UserRepository userRepository;
 
     @Bean
-    public Job inactiveUserJob(JobBuilderFactory jobBuilderFactory,
-                                Step inactiveJobStep) {
+    public Job inactiveUserJob(JobBuilderFactory jobBuilderFactory
+                                , InactiveIJobListener inactiveIJobListener
+                                , Step inactiveJobStep) {
         return jobBuilderFactory.get("inactiveUserJob")
                 .preventRestart()
+                .listener(inactiveIJobListener)
                 .start(inactiveJobStep)
                 .build();
     }
