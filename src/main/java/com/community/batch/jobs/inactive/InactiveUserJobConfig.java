@@ -3,6 +3,7 @@ package com.community.batch.jobs.inactive;
 import com.community.batch.domain.User;
 import com.community.batch.domain.enums.UserStatus;
 import com.community.batch.jobs.inactive.listener.InactiveIJobListener;
+import com.community.batch.jobs.inactive.listener.InactiveStepListener;
 import com.community.batch.repository.UserRepository;
 import lombok.AllArgsConstructor;
 import org.springframework.batch.core.Job;
@@ -10,6 +11,9 @@ import org.springframework.batch.core.Step;
 import org.springframework.batch.core.configuration.annotation.JobBuilderFactory;
 import org.springframework.batch.core.configuration.annotation.StepBuilderFactory;
 import org.springframework.batch.core.configuration.annotation.StepScope;
+import org.springframework.batch.core.job.builder.FlowBuilder;
+import org.springframework.batch.core.job.flow.Flow;
+import org.springframework.batch.core.job.flow.FlowExecutionStatus;
 import org.springframework.batch.item.ItemProcessor;
 import org.springframework.batch.item.database.JpaItemWriter;
 import org.springframework.batch.item.support.ListItemReader;
@@ -36,13 +40,26 @@ public class InactiveUserJobConfig {
     @Bean
     public Job inactiveUserJob(JobBuilderFactory jobBuilderFactory
                                 , InactiveIJobListener inactiveIJobListener
-                                , Step inactiveJobStep) {
+                                , Flow inactiveJobFlow) {
         return jobBuilderFactory.get("inactiveUserJob")
                 .preventRestart()
                 .listener(inactiveIJobListener)
-                .start(inactiveJobStep)
+                .start(inactiveJobFlow)
+                .end()
                 .build();
     }
+
+    @Bean
+    public Flow inactiveJobFlow(Step inactiveJobStep) {
+        FlowBuilder<Flow> flowBuilder = new FlowBuilder<>("inactiveJobFlow");
+        return flowBuilder
+                .start(new InactiveJobExecutionDecider())
+                .on(FlowExecutionStatus.FAILED.getName()).end()
+                .on(FlowExecutionStatus.COMPLETED.getName()).to(inactiveJobStep)
+                .end();
+    }
+
+
 
 //    @Bean
 //    public Step inactiveJobStep(StepBuilderFactory stepBuilderFactory,
@@ -55,13 +72,15 @@ public class InactiveUserJobConfig {
 //                .build();
 //    }
     @Bean
-    public Step inactiveJobStep(StepBuilderFactory stepBuilderFactory,
-                                ListItemReader<User> inactiveUserReader) {
+    public Step inactiveJobStep(StepBuilderFactory stepBuilderFactory
+                            ,  InactiveStepListener inactiveStepListener
+                            ,  ListItemReader<User> inactiveUserReader) {
         return stepBuilderFactory.get("inactiveUserStep")
                 .<User, User> chunk(CHUNK_SIZE)
                 .reader(inactiveUserReader)
                 .processor(inactiveUserProcessor())
                 .writer(inactiveUserWriter())
+                .listener(inactiveStepListener)
                 .build();
     }
 
@@ -90,7 +109,7 @@ public class InactiveUserJobConfig {
     @Bean
     @StepScope
     public ListItemReader<User> inactiveUserReader(UserRepository userRepository,
-                                                   @Value("#{jobParameteres[nowDate]}") Date nowDate) {
+                                                   @Value("#{jobParameters[nowDate]}") Date nowDate) {
         LocalDateTime now = LocalDateTime.ofInstant(nowDate.toInstant(), ZoneId.systemDefault());
 
         List<User> inactiveUsers =
