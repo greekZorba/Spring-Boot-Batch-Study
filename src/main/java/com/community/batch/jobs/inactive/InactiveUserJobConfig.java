@@ -1,14 +1,18 @@
 package com.community.batch.jobs.inactive;
 
 import com.community.batch.domain.User;
+import com.community.batch.domain.enums.Grade;
 import com.community.batch.domain.enums.UserStatus;
+import com.community.batch.jobs.inactive.listener.InactiveChunkListener;
 import com.community.batch.jobs.inactive.listener.InactiveIJobListener;
 import com.community.batch.jobs.inactive.listener.InactiveStepListener;
 import com.community.batch.repository.UserRepository;
 import lombok.AllArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.configuration.annotation.JobBuilderFactory;
+import org.springframework.batch.core.configuration.annotation.JobScope;
 import org.springframework.batch.core.configuration.annotation.StepBuilderFactory;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.job.builder.FlowBuilder;
@@ -20,13 +24,17 @@ import org.springframework.batch.item.support.ListItemReader;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.task.SimpleAsyncTaskExecutor;
+import org.springframework.core.task.TaskExecutor;
 
 import javax.persistence.EntityManagerFactory;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Date;
 import java.util.List;
+import java.util.stream.IntStream;
 
+@Slf4j
 @AllArgsConstructor
 @Configuration
 public class InactiveUserJobConfig {
@@ -40,24 +48,53 @@ public class InactiveUserJobConfig {
     @Bean
     public Job inactiveUserJob(JobBuilderFactory jobBuilderFactory
                                 , InactiveIJobListener inactiveIJobListener
-                                , Flow inactiveJobFlow) {
+//                                , Flow multiFlow
+                                , Step partitionerStep) {
         return jobBuilderFactory.get("inactiveUserJob")
                 .preventRestart()
                 .listener(inactiveIJobListener)
-                .start(inactiveJobFlow)
-                .end()
+//                .start(multiFlow)
+                .start(partitionerStep)
                 .build();
     }
 
     @Bean
-    public Flow inactiveJobFlow(Step inactiveJobStep) {
-        FlowBuilder<Flow> flowBuilder = new FlowBuilder<>("inactiveJobFlow");
-        return flowBuilder
-                .start(new InactiveJobExecutionDecider())
-                .on(FlowExecutionStatus.FAILED.getName()).end()
-                .on(FlowExecutionStatus.COMPLETED.getName()).to(inactiveJobStep)
-                .end();
+    @JobScope
+    public Step partitionerStep(StepBuilderFactory stepBuilderFactory
+                    , Step inactiveJobStep) {
+        return stepBuilderFactory
+                .get("partitionerStep")
+                .partitioner("partitionerStep", new InactiveUserPartitioner())
+                .gridSize(5)
+                .step(inactiveJobStep)
+                .taskExecutor(taskExecutor())
+                .build();
     }
+
+//    @Bean
+//    public Flow multiFlow(Step inactiveJobStep) {
+//        Flow flows[] = new Flow[5];
+//        IntStream.range(0, flows.length).forEach(i -> flows[i] =
+//                new FlowBuilder<Flow>("MultiFlow"+i).from(inactiveJobFlow(
+//                        inactiveJobStep)).end());
+//
+//        FlowBuilder<Flow> flowBuilder = new FlowBuilder<>("MultiFlowTest");
+//        return flowBuilder
+//                .split(taskExecutor())
+//                .add(flows)
+//                .build();
+//     }
+
+
+//    @Bean
+//    public Flow inactiveJobFlow(Step inactiveJobStep) {
+//        FlowBuilder<Flow> flowBuilder = new FlowBuilder<>("inactiveJobFlow");
+//        return flowBuilder
+//                .start(new InactiveJobExecutionDecider())
+//                .on(FlowExecutionStatus.FAILED.getName()).end()
+//                .on(FlowExecutionStatus.COMPLETED.getName()).to(inactiveJobStep)
+//                .end();
+//    }
 
 
 
@@ -73,15 +110,25 @@ public class InactiveUserJobConfig {
 //    }
     @Bean
     public Step inactiveJobStep(StepBuilderFactory stepBuilderFactory
-                            ,  InactiveStepListener inactiveStepListener
-                            ,  ListItemReader<User> inactiveUserReader) {
+                            , InactiveStepListener inactiveStepListener
+                            , InactiveChunkListener inactiveChunkListener
+                            , ListItemReader<User> inactiveUserReader
+                            , TaskExecutor taskExecutor) {
         return stepBuilderFactory.get("inactiveUserStep")
                 .<User, User> chunk(CHUNK_SIZE)
                 .reader(inactiveUserReader)
                 .processor(inactiveUserProcessor())
                 .writer(inactiveUserWriter())
+                .listener(inactiveChunkListener)
                 .listener(inactiveStepListener)
+                .taskExecutor(taskExecutor)
+                .throttleLimit(2)
                 .build();
+    }
+
+    @Bean
+    public TaskExecutor taskExecutor() {
+        return new SimpleAsyncTaskExecutor("Batch_Task");
     }
 
 //    @Bean(destroyMethod = "")
@@ -106,15 +153,27 @@ public class InactiveUserJobConfig {
 //        return jpaPagingItemReader;
 //    }
 
+//    @Bean
+//    @StepScope
+//    public ListItemReader<User> inactiveUserReader(UserRepository userRepository,
+//                                                   @Value("#{jobParameters[nowDate]}") Date nowDate) {
+//        LocalDateTime now = LocalDateTime.ofInstant(nowDate.toInstant(), ZoneId.systemDefault());
+//
+//        List<User> inactiveUsers =
+//                userRepository.findByUpdatedDateBeforeAndStatusEquals(
+//                        now.minusYears(1), UserStatus.ACTIVE);
+//        return new ListItemReader<>(inactiveUsers);
+//    }
+
     @Bean
     @StepScope
     public ListItemReader<User> inactiveUserReader(UserRepository userRepository,
-                                                   @Value("#{jobParameters[nowDate]}") Date nowDate) {
-        LocalDateTime now = LocalDateTime.ofInstant(nowDate.toInstant(), ZoneId.systemDefault());
-
+                                                   @Value("#{stepExecutionContext[grade]}") String grade) {
+        log.info(Thread.currentThread().getName());
         List<User> inactiveUsers =
-                userRepository.findByUpdatedDateBeforeAndStatusEquals(
-                        now.minusYears(1), UserStatus.ACTIVE);
+                userRepository.findByUpdatedDateBeforeAndStatusEqualsAndGradeEquals(
+                        LocalDateTime.now().minusYears(1), UserStatus.ACTIVE,
+                        Grade.valueOf(grade));
         return new ListItemReader<>(inactiveUsers);
     }
 
